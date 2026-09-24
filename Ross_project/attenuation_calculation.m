@@ -2,40 +2,65 @@
 % This script is used for calculating ice-penetrating radar attenuation
 clear all; clc;
 
-addpath(genpath('~/Ross_projects'))   % add general directory to all existing functions in Ross_project folder
+% add general directory to all existing functions in Ross_project folder
+addpath(genpath('/Users/kieratran/Desktop/Research/Projects/ris/rosetta/Ross_project'))  
 
 %% Load data:
 % In this section, you can load radargram add any directory or folder and load data
 % Best way to test run the code is to use Operation IceBridge data: https://data.cresis.ku.edu/data/rds/
-%     |---- Note: use CSARP_standard
+%     |---- Note: use CSARP_standard both (L1B and L2B data). For example:
+%           |---- echogram_fn = 'E:\rds\2012_Greenland_P3\CSARP_standard\20120514_01\Data_20120514_01_014.mat';
+%           |---- layer_fn = 'E:\rds\2012_Greenland_P3\CSARP_layerData\20120514_01\Data_20120514_01_014.mat';
+path = '/Users/kieratran/Desktop/Research/Projects/wais/2026/data/CreSIS/Venable/2016_DC8/';
+dataFile = 'Data_20161104_05_033.mat';
+echogram_fn = [path 'L1B/' dataFile];
+layer_fn = [path 'L2B/' dataFile];
 
-% For example:
-dataFile = 'radar_data.mat'; % Specify your data file here
-load(dataFile, 'Data', 'surfLayer', 'bedLayer', 'time', 'lat', 'lon', 'plane_elevation', 'surfTime');   % Load necessary variables
+load(echogram_fn); load(layer_fn); % load all variables
+
+% Neccessary variables: 'Data', 'surfLayer', 'bedLayer', 'Time', 'Latitude', 'Longitude', 'Elevation', 'surfTime', 'bedTime'
 % Surface and Bed layers can either be in elevation, index, or time
 % In this case, 'surfLayer' and 'bedLayer' are indices of surface and base layers
 %     |---- Check units and conversions
-%         |---- elevation = -0.5 * (time - surface_time) * 1.68e8;   %  Sound velocity through ice is 1.68e8 m/s
+%         |---- depth = -0.5 * (time - surface_time) * 1.68e8;   %  Sound velocity through ice is 1.68e8 m/s
+
+surfTime = Surface; 
+bedTime = layerData{2}.value{2}.data;
+if ~exist("surfLayer")
+    surfLayer = nan(size(Latitude));
+    for n = 1:numel(Latitude)
+        [~, surfLayer(n)] = nanmin(abs(Time - surfTime(n)));
+    end
+end
+
+if ~exist("bedLayer")
+    bedLayer = nan(size(Latitude));
+    for n = 1:numel(Latitude)
+        [~, bedLayer(n)] = nanmin(abs(Time - bedTime(n)));
+    end
+end
 
 
 %% Find inflection points:
 % This section identify (1) the boundary between firn and ice, 
 % and (2) bed-echo length to neglect scattering power signals
 
+warning off;
+
 % ---- 1. Initialization ----
-inLayer = nan(size(lat));   % indices of firn depth
-inLayer2 = nan(size(lat));   % indices of bed-echo return
-firn_confidence = nan(size(lat));
+inLayer = nan(size(Latitude));   % indices of firn depth
+inLayer2 = nan(size(Latitude));   % indices of bed-echo return
+firn_confidence = nan(size(Latitude));
 
 % ---- 2. Setting limits for each layers (you can tune this) ----
 firn_prior = 70;   echo_prior = 50;   % expected depths (m)
 firn_range = 30;   echo_range = 50;   % search ± range (m)
 disp('>>>> Getting layers ...')
-for i = 1:numel(lat)
+for i = 1:numel(Latitude)
     if isnan(surfLayer(i)) || isnan(bedLayer(i)) || bedLayer(i) <= surfLayer(i) + 10
         continue   % all outputs already NaN from pre-allocation
     end
-    [power, depth] = geo_correction(Data(:,i), time(:,i), surfTime(i), plane_elevation(i)); 
+    [power, depth] = geo_correction(Data(:,i), Time, surfTime(i), Elevation(i)); 
 
 % ---- 3.  Dectecting layers' boundaries ----
     surf_s = surfLayer(i);
@@ -68,6 +93,9 @@ for i = 1:numel(lat)
     end
 end
 
+% If you don't have 'smoothn' function install, download it here: 
+%               https://www.mathworks.com/matlabcentral/fileexchange/25634-smoothn
+
 % ---- 4. Smoothing layers ----
 nanidx = isnan(inLayer); inLayer = smoothn(inLayer, 600); 
 inLayer(nanidx) = NaN; inLayer = round(inLayer);
@@ -75,13 +103,13 @@ nanidx = isnan(inLayer2); inLayer2 = smoothn(inLayer2, 600);
 inLayer2(nanidx) = NaN; inLayer2 = round(inLayer2);
 
 % ---- 5. Converting from indices to elevation (m) ----
-firnElevation = nan(size(lat));
-echoElevation = nan(size(lat));
-surfElevation = nan(size(lat));
-bedElevation = nan(size(lat));
-for i = 1:numel(lat)
+firnElevation = nan(size(Latitude));
+echoElevation = nan(size(Latitude));
+surfElevation = nan(size(Latitude));
+bedElevation = nan(size(Latitude));
+for i = 1:numel(Latitude)
     if ~isnan(surfTime(i)) && ~isnan(inLayer(i)) && ~isnan(inLayer2(i))
-        [power, depth] = geo_correction(Data(:,i), time(:,i), surfTime(i), plane_elevation(i));
+        [power, depth] = geo_correction(Data(:,i), Time, surfTime(i), Elevation(i));
         firnElevation(i) = depth(inLayer(i));   % firn layer depth (m)
         echoElevation(i) = depth(inLayer2(i));   % bed-echo layer depth (m)
         surfElevation(i) = depth(surfLayer(i));   % surface layer depth (m)
@@ -96,15 +124,16 @@ IceThick = abs(bedElevation - surfElevation);
 % This section calculates depth-resolved multi-reflector attenuation rates
 
 % ---- 1. Initialization ----
-AttenRate = nan(size(lat));   % linear fitting attenuation rate
-AttenRate_unc = nan(size(lat));   % linear fitting uncertainty
-Na = nan(size(lat));   % piecewise fitting attenuation rate
-Na_unc = nan(size(lat));    % piecewise fitting uncertainty
+AttenRate = nan(size(Latitude));   % linear fitting attenuation rate
+AttenRate_unc = nan(size(Latitude));   % linear fitting uncertainty
+Na = nan(size(Latitude));   % piecewise fitting attenuation rate
+Na_unc = nan(size(Latitude));    % piecewise fitting uncertainty
 
 disp('>>> Calculating attenuation rates ...')
-for i = 1:numel(lat)
+for i = 1:numel(Latitude)
+    %disp(i)
     if ~isnan(inLayer(i)) && ~isnan(inLayer2(i)) && inLayer2(i) > inLayer(i)   % surface and bed picks exist
-        [power, depth] = geo_correction(Data(:,i), time(:,i), surfTime(i), plane_elevation(i));   % geometrically correct returned power
+        [power, depth] = geo_correction(Data(:,i), Time, surfTime(i), Elevation(i));   % geometrically correct returned power
 
 % ---- 2. Looping through each segment length and calculate attenuation ----
         num = 1;
